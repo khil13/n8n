@@ -1,0 +1,80 @@
+name: 'Fork: Build arm64 Docker image'
+
+# Build the n8n image of this fork for arm64 and push it to GHCR.
+# The job runs natively on an arm64 runner, so no emulation is necessary.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: build-fork-arm64-image
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Keep in line with docker/docker-bake.hcl. The image compiles native
+  # modules against this Node version.
+  NODE_VERSION: '26.7.0'
+
+jobs:
+  build:
+    # Run only in the fork. Upstream has its own image pipeline.
+    if: github.repository == 'khil13/n8n'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve pnpm version
+        id: pnpm-version
+        run: node .github/scripts/resolve-pnpm-version.mjs
+
+      - name: Setup pnpm
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: false
+          version: ${{ steps.pnpm-version.outputs.version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build n8n into ./compiled
+        run: pnpm build:n8n
+        env:
+          NODE_OPTIONS: --max-old-space-size=12288
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        env:
+          PLATFORMS: linux/arm64
+          N8N_TAGS: ghcr.io/${{ github.repository }}:latest,ghcr.io/${{ github.repository }}:${{ github.sha }}
+        run: |
+          docker buildx bake -f docker/docker-bake.hcl n8n \
+            --provenance=false \
+            --sbom=false \
+            --set '*.output=type=image,oci-mediatypes=true,push=true'
